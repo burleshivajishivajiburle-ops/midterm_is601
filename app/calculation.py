@@ -1,0 +1,1 @@
+# Calculation class for handling individual calculations

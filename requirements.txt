@@ -1,0 +1,13 @@
+# Python dependencies for the advanced calculator project
+# Core dependencies
+python-dotenv>=1.0.0
+pandas>=2.0.0
+
+# Testing dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Development dependencies
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0

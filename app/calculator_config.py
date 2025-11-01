@@ -1,0 +1,1 @@
+# Calculator configuration settings

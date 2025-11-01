@@ -1,0 +1,1 @@
+# Logging system with Observer pattern

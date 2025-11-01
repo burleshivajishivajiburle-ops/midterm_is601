@@ -1,0 +1,1 @@
+# Memento pattern implementation for undo/redo functionality
