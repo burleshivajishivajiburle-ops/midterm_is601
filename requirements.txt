@@ -1,13 +1,27 @@
 # Python dependencies for the advanced calculator project
-# Core dependencies
-python-dotenv>=1.0.0
-pandas>=2.0.0
+# Runtime dependencies only - for development dependencies see requirements-dev.txt
 
-# Testing dependencies
-pytest>=7.0.0
-pytest-cov>=4.0.0
+# Core application dependencies
+python-dotenv>=1.0.0          # Environment variable management (.env file support)
+pandas>=2.0.0                 # Data manipulation and CSV handling for calculation history
+openpyxl>=3.1.0               # Excel export support for history
 
-# Development dependencies
-black>=23.0.0
-flake8>=6.0.0
-mypy>=1.0.0
+# Standard library dependencies (included for clarity - usually part of Python)
+# These are typically included with Python but listed for completeness:
+# - abc (Abstract Base Classes)
+# - datetime (Date and time handling)
+# - decimal (Decimal arithmetic)
+# - json (JSON handling)
+# - logging (Logging framework)
+# - math (Mathematical functions)
+# - os (Operating system interface)
+# - pathlib (Object-oriented path handling)
+# - re (Regular expressions)
+# - typing (Type hints)
+# - uuid (UUID generation)
+# - copy (Shallow and deep copy operations)
+# - time (Time-related functions)
+
+# Testing dependencies (minimal for running tests)
+pytest>=7.0.0                 # Testing framework
+pytest-cov>=4.0.0            # Coverage reporting for pytest
