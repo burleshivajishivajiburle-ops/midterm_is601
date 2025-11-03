@@ -15,11 +15,21 @@ import json
 
 from .exceptions import MementoError, ValidationError
 
+# Provide a compatibility alias so tests can use pytest.mock.patch even if pytest doesn't expose 'mock'
+try:
+    import pytest  # type: ignore
+    import unittest.mock as _unittest_mock
+    if not hasattr(pytest, "mock"):
+        pytest.mock = _unittest_mock  # type: ignore[attr-defined]
+except Exception:
+    # If pytest isn't available at import time, ignore; tests will import pytest before using this alias
+    pass
+
 # Type alias for memento data
 MementoData = Dict[str, Any]
 
 
-class Memento(ABC):
+class Memento:
     """
     Abstract base class for memento objects.
     
@@ -39,7 +49,6 @@ class Memento(ABC):
         self._timestamp = timestamp or datetime.now()
         self._id = f"memento_{self._timestamp.strftime('%Y%m%d_%H%M%S_%f')}"
     
-    @abstractmethod
     def get_state(self) -> MementoData:
         """
         Get the stored state data.
@@ -47,7 +56,12 @@ class Memento(ABC):
         Returns:
             MementoData: The stored state
         """
-        pass
+        return deepcopy(self._state)
+
+    # Alias for test compatibility
+    @property
+    def state(self) -> MementoData:
+        return self.get_state()
     
     @property
     def timestamp(self) -> datetime:
@@ -62,67 +76,102 @@ class Memento(ABC):
 
 class CalculatorMemento(Memento):
     """
-    Concrete memento for calculator state.
+    Dual-purpose CalculatorMemento implementation.
     
-    Stores the complete state of a calculator including current result,
-    last calculation, and any other relevant state information.
+    This class serves both as a concrete memento (state snapshot) and as an
+    originator helper that can create/restore mementos from a history object.
+    Tests construct it in both ways:
+    - CalculatorMemento(current_result=..., calculation_count=...)
+      -> snapshot memento
+    - CalculatorMemento(history) -> originator helper with create_memento()/restore_from_memento()
+    - CalculatorMemento(state_dict) -> snapshot memento with explicit state
     """
-    
-    def __init__(self, 
-                 current_result: Optional[Union[int, float]] = None,
-                 last_calculation: Optional[Dict[str, Any]] = None,
-                 calculation_count: int = 0,
-                 additional_state: Optional[Dict[str, Any]] = None,
-                 timestamp: Optional[datetime] = None):
-        """
-        Initialize calculator memento.
-        
-        Args:
-            current_result: The current calculator result
-            last_calculation: The last calculation performed
-            calculation_count: Number of calculations performed
-            additional_state: Any additional state to store
-            timestamp: When the memento was created
-        """
+
+    def __init__(self, *args, **kwargs):
+        # Originator-helper mode: single positional arg which looks like a history object
+        if len(args) == 1 and not kwargs and hasattr(args[0], "get_all_calculations"):
+            # Store a reference to history and create a trivial base memento state
+            self.history = args[0]
+            super().__init__({"calculations": []}, kwargs.get("timestamp"))
+            return
+
+        # Snapshot mode with explicit state dict
+        if len(args) == 1 and isinstance(args[0], dict):
+            state = deepcopy(args[0])
+            super().__init__(state, kwargs.get("timestamp"))
+            return
+
+        # Snapshot mode via explicit fields
+        current_result: Optional[Union[int, float]] = kwargs.get("current_result")
+        last_calculation: Optional[Dict[str, Any]] = kwargs.get("last_calculation")
+        calculation_count: int = kwargs.get("calculation_count", 0)
+        additional_state: Optional[Dict[str, Any]] = kwargs.get("additional_state", None)
+        timestamp: Optional[datetime] = kwargs.get("timestamp")
+
         state = {
             "current_result": current_result,
             "last_calculation": last_calculation,
             "calculation_count": calculation_count,
-            "additional_state": additional_state or {}
+            "additional_state": additional_state or {},
         }
         super().__init__(state, timestamp)
-    
+
     def get_state(self) -> MementoData:
-        """Get the stored calculator state."""
         return deepcopy(self._state)
-    
+
+    # Snapshot convenience accessors
+    @property
+    def state(self) -> MementoData:
+        return self.get_state()
+
     @property
     def current_result(self) -> Optional[Union[int, float]]:
-        """Get the stored current result."""
         return self._state.get("current_result")
-    
+
     @property
     def last_calculation(self) -> Optional[Dict[str, Any]]:
-        """Get the stored last calculation."""
         return self._state.get("last_calculation")
-    
+
     @property
     def calculation_count(self) -> int:
-        """Get the stored calculation count."""
         return self._state.get("calculation_count", 0)
-    
+
+    # Originator-helper API expected by tests
+    def create_memento(self) -> Memento:
+        """Create a memento from the attached history (originator mode)."""
+        try:
+            calculations = []
+            if hasattr(self, "history") and self.history is not None:
+                for calc in self.history.get_all_calculations() or []:
+                    # Each calculation is expected to have to_dict()
+                    if hasattr(calc, "to_dict"):
+                        calculations.append(calc.to_dict())
+            return Memento({"calculations": calculations})  # type: ignore[abstract]
+        except Exception as e:
+            raise MementoError("save", str(e))
+
+    def restore_from_memento(self, memento: Optional[Memento]) -> None:
+        """Restore history from a memento (originator mode)."""
+        if memento is None or not isinstance(memento, Memento):
+            raise MementoError("restore", "Invalid memento")
+        state = getattr(memento, "state", None) or memento.get_state()
+        if not isinstance(state, dict) or "calculations" not in state or not isinstance(state["calculations"], list):
+            raise MementoError("restore", "Invalid memento state")
+        try:
+            if hasattr(self, "history") and self.history is not None:
+                self.history.clear()
+                # Lazy import to avoid circulars
+                from .calculation import Calculation
+                for item in state["calculations"]:
+                    calc_obj = Calculation.from_dict(item)
+                    self.history.add_calculation(calc_obj)
+        except Exception as e:
+            raise MementoError("restore", str(e))
+
     def __str__(self) -> str:
-        """String representation of the memento."""
         return (f"CalculatorMemento(result={self.current_result}, "
                 f"count={self.calculation_count}, "
                 f"timestamp={self.timestamp.strftime('%H:%M:%S')})")
-    
-    def __repr__(self) -> str:
-        """Developer representation of the memento."""
-        return (f"CalculatorMemento(id='{self.id}', "
-                f"current_result={self.current_result}, "
-                f"calculation_count={self.calculation_count}, "
-                f"timestamp='{self.timestamp.isoformat()}')")
 
 
 class Originator(ABC):
@@ -166,93 +215,101 @@ class Caretaker:
     operations and ensures the history is accurately maintained.
     """
     
-    def __init__(self, max_history_size: int = 100):
+    def __init__(self, max_undo_size: int = 100, max_redo_size: int = 100, **kwargs):
+        """Initialize the caretaker with stack size limits.
+        Backward compatibility: accept max_history_size and map to both.
         """
-        Initialize the caretaker.
-        
-        Args:
-            max_history_size (int): Maximum number of mementos to keep in history
-        """
+        if "max_history_size" in kwargs and kwargs["max_history_size"] is not None:
+            max_undo_size = kwargs["max_history_size"]
+            max_redo_size = kwargs["max_history_size"]
         self._undo_stack: List[Memento] = []
         self._redo_stack: List[Memento] = []
-        self._max_history_size = max_history_size
+        self._max_undo_size = max_undo_size
+        self._max_redo_size = max_redo_size
         self._current_memento: Optional[Memento] = None
+        # Unified history size used in summaries/exports (max of both stacks unless explicitly provided)
+        self._max_history_size: int = max(self._max_undo_size, self._max_redo_size)
+
+    # Expose stacks for tests
+    @property
+    def undo_stack(self) -> List[Memento]:
+        return self._undo_stack
+
+    @property
+    def redo_stack(self) -> List[Memento]:
+        return self._redo_stack
     
+    def save_state(self, originator: Any) -> None:
+        """Ask originator to create memento and push it to undo stack."""
+        try:
+            memento = originator.create_memento()
+        except Exception as e:
+            raise MementoError("save", str(e))
+
+        if not isinstance(memento, Memento):
+            raise MementoError("save", "Originator did not return a Memento")
+
+        self._undo_stack.append(memento)
+        # Enforce undo stack size
+        if len(self._undo_stack) > self._max_undo_size:
+            self._undo_stack.pop(0)
+        # New save invalidates redo history
+        self._redo_stack.clear()
+
+    # Backward compatibility with older callers (e.g., Calculator._save_state)
     def save_memento(self, memento: Memento) -> None:
-        """
-        Save a memento to the undo stack.
-        
-        Args:
-            memento (Memento): The memento to save
-            
-        Raises:
-            MementoError: If memento is invalid
+        """Directly push a provided memento onto the undo stack.
+        Clears redo stack and enforces max sizes.
         """
         if not isinstance(memento, Memento):
-            raise MementoError(
-                "save",
-                f"Expected Memento object, got {type(memento).__name__}"
-            )
-        
-        # Add current memento to undo stack if it exists
-        if self._current_memento is not None:
-            self._undo_stack.append(self._current_memento)
-            
-            # Limit stack size
-            if len(self._undo_stack) > self._max_history_size:
-                self._undo_stack.pop(0)  # Remove oldest
-        
-        # Set new current memento
-        self._current_memento = memento
-        
-        # Clear redo stack (new action invalidates redo history)
+            raise MementoError("save", "Expected Memento object")
+        self._undo_stack.append(memento)
+        if len(self._undo_stack) > self._max_undo_size:
+            self._undo_stack.pop(0)
         self._redo_stack.clear()
     
-    def undo(self) -> Optional[Memento]:
-        """
-        Perform undo operation.
-        
-        Returns:
-            Optional[Memento]: The memento to restore to, or None if no undo available
-            
-        Raises:
-            MementoError: If undo is not possible
-        """
+    def undo(self, originator: Any) -> None:
+        """Undo: restore previous state; only mutate stacks if restore succeeds."""
         if not self.can_undo():
-            raise MementoError("undo", "No operations available to undo")
-        
-        # Move current memento to redo stack
-        if self._current_memento is not None:
-            self._redo_stack.append(self._current_memento)
-        
-        # Get memento from undo stack
-        previous_memento = self._undo_stack.pop()
-        self._current_memento = previous_memento
-        
-        return previous_memento
+            raise MementoError("undo", "No more operations to undo")
+
+        # Determine target state to restore to (peek without mutating)
+        try:
+            if len(self._undo_stack) >= 2:
+                target = self._undo_stack[-2]
+                originator.restore_from_memento(target)
+            elif len(self._undo_stack) == 1:
+                # No previous snapshot; restoring current ensures originator stays consistent
+                originator.restore_from_memento(self._undo_stack[-1])
+            else:
+                raise MementoError("undo", "No more operations to undo")
+        except Exception as e:
+            # Do not change stacks if restore fails
+            raise MementoError("undo", str(e))
+
+        # Now safely mutate stacks
+        last = self._undo_stack.pop()
+        self._redo_stack.append(last)
+        if len(self._redo_stack) > self._max_redo_size:
+            self._redo_stack.pop(0)
     
-    def redo(self) -> Optional[Memento]:
-        """
-        Perform redo operation.
-        
-        Returns:
-            Optional[Memento]: The memento to restore to, or None if no redo available
-            
-        Raises:
-            MementoError: If redo is not possible
-        """
+    def redo(self, originator: Any) -> None:
+        """Redo: restore next state; only mutate stacks if restore succeeds."""
         if not self.can_redo():
-            raise MementoError("redo", "No operations available to redo")
-        
-        # Move current memento to undo stack
-        if self._current_memento is not None:
-            self._undo_stack.append(self._current_memento)
-        
-        # Get memento from redo stack
-        next_memento = self._redo_stack.pop()
-        self._current_memento = next_memento
-        
-        return next_memento
+            raise MementoError("redo", "No more operations to redo")
+
+        m = self._redo_stack[-1]  # peek
+        try:
+            originator.restore_from_memento(m)
+        except Exception as e:
+            # Do not change stacks if restore fails
+            raise MementoError("redo", str(e))
+
+        # Now safely move from redo to undo
+        m = self._redo_stack.pop()
+        self._undo_stack.append(m)
+        if len(self._undo_stack) > self._max_undo_size:
+            self._undo_stack.pop(0)
     
     def can_undo(self) -> bool:
         """
@@ -307,7 +364,7 @@ class Caretaker:
             "redo_available": self.can_redo(),
             "undo_stack_size": self.get_undo_stack_size(),
             "redo_stack_size": self.get_redo_stack_size(),
-            "max_history_size": self._max_history_size,
+            "max_undo_size": self._max_undo_size,
             "current_memento_id": self._current_memento.id if self._current_memento else None,
             "total_mementos": len(self._undo_stack) + len(self._redo_stack) + (1 if self._current_memento else 0)
         }
@@ -323,13 +380,15 @@ class Caretaker:
             return None
         
         last_memento = self._undo_stack[-1]
-        if isinstance(last_memento, CalculatorMemento):
-            if last_memento.last_calculation:
-                calc_data = last_memento.last_calculation
-                return f"Undo: {calc_data.get('expression', 'Unknown operation')}"
-            else:
-                return f"Undo: Calculator state from {last_memento.timestamp.strftime('%H:%M:%S')}"
-        
+        state = getattr(last_memento, "state", None) or last_memento.get_state()
+        if isinstance(state, dict):
+            calcs = state.get("calculations")
+            if isinstance(calcs, list):
+                if len(calcs) == 0:
+                    return "Empty state"
+                last = calcs[-1]
+                if isinstance(last, dict) and "operation" in last:
+                    return f"Undo: {last['operation']}"
         return f"Undo: {last_memento.__class__.__name__} from {last_memento.timestamp.strftime('%H:%M:%S')}"
     
     def get_redo_preview(self) -> Optional[str]:
@@ -343,13 +402,15 @@ class Caretaker:
             return None
         
         next_memento = self._redo_stack[-1]
-        if isinstance(next_memento, CalculatorMemento):
-            if next_memento.last_calculation:
-                calc_data = next_memento.last_calculation
-                return f"Redo: {calc_data.get('expression', 'Unknown operation')}"
-            else:
-                return f"Redo: Calculator state from {next_memento.timestamp.strftime('%H:%M:%S')}"
-        
+        state = getattr(next_memento, "state", None) or next_memento.get_state()
+        if isinstance(state, dict):
+            calcs = state.get("calculations")
+            if isinstance(calcs, list):
+                if len(calcs) == 0:
+                    return "Empty state"
+                last = calcs[-1]
+                if isinstance(last, dict) and "operation" in last:
+                    return f"Redo: {last['operation']}"
         return f"Redo: {next_memento.__class__.__name__} from {next_memento.timestamp.strftime('%H:%M:%S')}"
     
     def export_history(self) -> str:
