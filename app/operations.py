@@ -144,14 +144,29 @@ class PowerOperation(Operation):
             result = a ** b
             
             # Check for overflow or invalid results
-            if math.isnan(result) or math.isinf(result):
+            # Normalize to float where possible to test for inf/nan, and also bound large ints
+            try:
+                f = float(result)
+                if math.isnan(f) or math.isinf(f):
+                    raise OverflowError("power", [a, b])
+            except (OverflowError, ValueError, TypeError):
+                # For extremely large integers that cannot be cast to float, treat as overflow
+                raise OverflowError("power", [a, b])
+            
+            # Explicit numeric bound check (covers very large ints within float range test)
+            try:
+                if abs(result) > 1e308:
+                    raise OverflowError("power", [a, b])
+            except TypeError:
+                # Non-numeric result type (e.g., complex) shouldn't occur here; raise overflow
                 raise OverflowError("power", [a, b])
             
             return result
-        except (TypeError, ValueError, OverflowError) as e:
-            if isinstance(e, OverflowError):
-                raise
+        except (TypeError, ValueError) as e:
             raise OperationError("power", [a, b], f"Invalid power operation: {str(e)}")
+        except (ZeroDivisionError, ArithmeticError) as e:
+            # Handle Python's built-in overflow and arithmetic errors
+            raise OverflowError("power", [a, b])
 
 
 class RootOperation(Operation):
@@ -180,7 +195,7 @@ class RootOperation(Operation):
                 raise InvalidRootError([a, b], "Result is not a real number")
             
             return result
-        except (TypeError, ValueError, ZeroDivisionError) as e:
+        except (TypeError, ValueError, ZeroDivisionError, ArithmeticError) as e:
             raise InvalidRootError([a, b], f"Invalid root operation: {str(e)}")
 
 
