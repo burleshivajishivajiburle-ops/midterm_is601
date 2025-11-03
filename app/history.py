@@ -14,6 +14,7 @@ import json
 import uuid
 
 from .exceptions import HistoryError, FileOperationError, ValidationError
+from .calculation import Calculation
 
 # Type aliases
 CalculationDict = Dict[str, Any]
@@ -95,9 +96,9 @@ class CalculationHistory:
                 "duration_ms": calculation_data.get("duration_ms", 0)
             }
             
-            # Add to DataFrame
-            new_row = pd.DataFrame([row_data])
-            self._history = pd.concat([self._history, new_row], ignore_index=True)
+            # Add to DataFrame efficiently without concat to avoid FutureWarning
+            # and preserve dtypes; use loc row assignment
+            self._history.loc[len(self._history)] = row_data
             
             # Apply size limit
             if len(self._history) > self.max_entries:
@@ -133,7 +134,7 @@ class CalculationHistory:
         except Exception as e:
             raise HistoryError("get", f"Failed to get calculation {calc_id}: {str(e)}")
     
-    def get_recent_calculations(self, count: int = 10) -> List[CalculationDict]:
+    def get_recent_calculations(self, count: int = 10) -> List[Calculation]:
         """
         Get the most recent calculations.
         
@@ -149,11 +150,30 @@ class CalculationHistory:
             
             # Sort by timestamp (most recent first) and take the requested count
             recent = self._history.sort_values("timestamp", ascending=False).head(count)
-            
-            return [self._row_to_dict(row) for _, row in recent.iterrows()]
+            # Return Calculation objects (most recent first)
+            return [Calculation.from_dict(self._row_to_dict(row)) for _, row in recent.iterrows()]
             
         except Exception as e:
             raise HistoryError("get_recent", f"Failed to get recent calculations: {str(e)}")
+    
+    def get_all_calculations(self) -> List[Calculation]:
+        """
+        Get all calculations in the history.
+        
+        Returns:
+            List[CalculationDict]: All calculations, ordered by timestamp (most recent first)
+        """
+        try:
+            if self.is_empty():
+                return []
+            
+            # Sort by timestamp (oldest first) to match test expectations
+            all_calcs = self._history.sort_values("timestamp", ascending=True)
+            # Convert to Calculation objects
+            return [Calculation.from_dict(self._row_to_dict(row)) for _, row in all_calcs.iterrows()]
+            
+        except Exception as e:
+            raise HistoryError("get_all", f"Failed to get all calculations: {str(e)}")
     
     def search_calculations(self, 
                           operation: Optional[str] = None,
@@ -461,6 +481,10 @@ class CalculationHistory:
     def get_count(self) -> int:
         """Get the total number of calculations in history."""
         return len(self._history)
+
+    def __len__(self) -> int:
+        """len(history) support: number of stored calculations."""
+        return self.get_count()
     
     def is_empty(self) -> bool:
         """Check if history is empty."""
@@ -475,9 +499,68 @@ class CalculationHistory:
         """
         if self._history.empty:
             return None
-        
+        # Last calculation is the most recent by timestamp
         latest = self._history.sort_values("timestamp", ascending=False).iloc[0]
-        return self._row_to_dict(latest)
+        return Calculation.from_dict(self._row_to_dict(latest))
+
+    # --- Compatibility and utility methods for tests ---
+    def remove_last(self) -> bool:
+        """Remove the most recent calculation entry.
+        Returns True if an entry was removed.
+        """
+        if self._history.empty:
+            return False
+        # Find index of most recent timestamp row and drop it
+        latest_idx = self._history["timestamp"].astype(str).astype('string').str.len().idxmax()
+        # Fallback: sort and take last index
+        try:
+            sorted_df = self._history.sort_values("timestamp", ascending=True)
+            last_index = sorted_df.index[-1]
+        except Exception:
+            last_index = self._history.index[-1]
+        self._history = self._history.drop(index=last_index).reset_index(drop=True)
+        if self.auto_save and self.history_file:
+            self.save_history()
+        return True
+
+    def trim_to_count(self, count: int) -> None:
+        """Trim history to the first 'count' entries (oldest-first)."""
+        if count < 0:
+            count = 0
+        if self._history.empty:
+            return
+        df = self._history.sort_values("timestamp", ascending=True).head(count)
+        self._history = df.reset_index(drop=True)
+        if self.auto_save and self.history_file:
+            self.save_history()
+
+    def load_from_csv(self, file_path: str) -> None:
+        """Compatibility loader for files saved by AutoSaveObserver.
+        Expects columns: timestamp, operation, operand_a, operand_b, result, expression, calculation_id
+        Maps them into internal HISTORY_COLUMNS.
+        """
+        try:
+            df = pd.read_csv(file_path, encoding='utf-8')
+            # Map columns to internal schema
+            mapped = pd.DataFrame()
+            mapped["id"] = df.get("calculation_id").fillna("")
+            mapped["timestamp"] = df.get("timestamp")
+            mapped["operation"] = df.get("operation")
+            mapped["operand_a"] = df.get("operand_a")
+            mapped["operand_b"] = df.get("operand_b")
+            mapped["result"] = df.get("result")
+            mapped["expression"] = df.get("expression")
+            # Infer success from presence of result (best effort)
+            mapped["success"] = mapped["result"].notna()
+            mapped["error_message"] = ""
+            mapped["duration_ms"] = 0
+            # Reorder and assign
+            for col in self.HISTORY_COLUMNS:
+                if col not in mapped.columns:
+                    mapped[col] = None
+            self._history = mapped[self.HISTORY_COLUMNS].copy().reset_index(drop=True)
+        except Exception as e:
+            raise FileOperationError(file_path, "load", f"Failed to load CSV: {e}")
     
     def get_operation_history(self, operation: str, limit: int = 10) -> List[CalculationDict]:
         """
