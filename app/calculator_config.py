@@ -9,7 +9,12 @@ and runtime configuration updates.
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, List
-from dotenv import load_dotenv
+# Optional dependency: python-dotenv. If unavailable, fall back to a no-op.
+try:
+    from dotenv import load_dotenv  # type: ignore
+except Exception:  # ModuleNotFoundError or others
+    def load_dotenv(*args, **kwargs):  # type: ignore
+        return False
 import json
 
 from .exceptions import ConfigurationError, ValidationError
@@ -35,8 +40,8 @@ class CalculatorConfig:
         "CALCULATOR_HISTORY_DIR": "history",
         
         # History Settings
-        "CALCULATOR_MAX_HISTORY_SIZE": 100,
-        "CALCULATOR_AUTO_SAVE": True,
+    "CALCULATOR_MAX_HISTORY_SIZE": 100,
+    "CALCULATOR_AUTO_SAVE": False,
         
         # Calculation Settings
         "CALCULATOR_PRECISION": 6,
@@ -58,11 +63,11 @@ class CalculatorConfig:
         
         # Feature Flags
         "CALCULATOR_ENABLE_LOGGING": True,
-        "CALCULATOR_ENABLE_AUTO_SAVE": True,
+    "CALCULATOR_ENABLE_AUTO_SAVE": False,
         "CALCULATOR_ENABLE_UNDO_REDO": True,
     }
     
-    def __init__(self, env_file: Optional[str] = None, auto_create_dirs: bool = True):
+    def __init__(self, env_file: Optional[str] = None, auto_create_dirs: bool = False):
         """
         Initialize the configuration manager.
         
@@ -77,7 +82,7 @@ class CalculatorConfig:
         # Load configuration
         self._load_configuration()
         
-        # Create directories if requested
+        # Create directories if requested (and only for enabled features)
         if self._auto_create_dirs:
             self._create_directories()
     
@@ -189,12 +194,19 @@ class CalculatorConfig:
             )
     
     def _create_directories(self) -> None:
-        """Create required directories if they don't exist."""
-        directories = [
-            self.get_log_dir(),
-            self.get_history_dir()
-        ]
-        
+        """Create required directories for enabled features.
+
+        Only create the log directory when logging is enabled and the history
+        directory when auto-save is enabled. This keeps the repository root
+        clean and aligned with assignment structure while remaining functional
+        when features are used.
+        """
+        directories = []
+        if self.is_logging_enabled():
+            directories.append(self.get_log_dir())
+        if self.is_auto_save_enabled():
+            directories.append(self.get_history_dir())
+
         for directory in directories:
             try:
                 Path(directory).mkdir(parents=True, exist_ok=True)
