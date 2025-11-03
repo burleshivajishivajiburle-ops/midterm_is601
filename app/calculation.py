@@ -52,6 +52,22 @@ class Calculation:
         
         # Perform the calculation
         self._execute_calculation()
+
+    # --- Compatibility aliases for tests expecting different attribute names ---
+    @property
+    def operand1(self) -> Number:
+        """Alias for first operand (test compatibility)."""
+        return self.operand_a
+
+    @property
+    def operand2(self) -> Number:
+        """Alias for second operand (test compatibility)."""
+        return self.operand_b
+
+    @property
+    def calculation_id(self) -> str:
+        """Alias for calculation ID (test compatibility)."""
+        return self.id
     
     def _execute_calculation(self) -> None:
         """
